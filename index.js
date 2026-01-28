@@ -151,6 +151,98 @@ app.get("/api/stats/overview", auth, async (req, res) => {
   res.json({ total, paid, unpaid, active });
 });
 
+app.get("/api/clients/export/csv", auth, async (req, res) => {
+  const { q = "", status, paymentStatus } = req.query;
+
+  const where = {
+    AND: [
+      q
+        ? {
+            OR: [
+              { fullName: { contains: q, mode: "insensitive" } },
+              { phone: { contains: q, mode: "insensitive" } },
+            ],
+          }
+        : {},
+      status ? { status } : {},
+      paymentStatus ? { paymentStatus } : {},
+    ],
+  };
+
+  const items = await prisma.client.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+  });
+
+  // CSV escape
+  const esc = (v) => {
+    const s = String(v ?? "");
+    if (s.includes('"') || s.includes(",") || s.includes("\n")) {
+      return `"${s.replaceAll('"', '""')}"`;
+    }
+    return s;
+  };
+
+  const header = [
+    "id",
+    "fullName",
+    "phone",
+    "course",
+    "status",
+    "paymentStatus",
+    "createdAt",
+  ];
+  const lines = [
+    header.join(","),
+    ...items.map((c) =>
+      [
+        c.id,
+        esc(c.fullName),
+        esc(c.phone),
+        esc(c.course),
+        esc(c.status),
+        esc(c.paymentStatus),
+        esc(c.createdAt.toISOString()),
+      ].join(","),
+    ),
+  ];
+
+  const csv = lines.join("\n");
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="clients.csv"`);
+  res.send(csv);
+});
+
+// Quick toggle: paymentStatus yoki status ni tez o'zgartirish
+app.patch("/api/clients/:id/toggle", auth, async (req, res) => {
+  const id = Number(req.params.id);
+  const { field } = req.body; // "paymentStatus" | "status"
+
+  if (!["paymentStatus", "status"].includes(field)) {
+    return res.status(400).json({ message: "Invalid field" });
+  }
+
+  const client = await prisma.client.findUnique({ where: { id } });
+  if (!client) return res.status(404).json({ message: "Client not found" });
+
+  const next =
+    field === "paymentStatus"
+      ? client.paymentStatus === "paid"
+        ? "unpaid"
+        : "paid"
+      : client.status === "active"
+        ? "inactive"
+        : "active";
+
+  const updated = await prisma.client.update({
+    where: { id },
+    data: { [field]: next },
+  });
+
+  res.json(updated);
+});
+
 app.listen(process.env.PORT || 4000, () => {
   console.log("✅ Server running on port", process.env.PORT || 4000);
 });
